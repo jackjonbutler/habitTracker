@@ -6,7 +6,7 @@ const Habit = require('../models/Habit');
 const authenticateUser = require('../middleware/auth');
 const { upload } = require('../middleware/validation');
 const { uploadImage, isValidImage } = require('../services/imageService');
-const { verifyImage } = require('../services/verificationService'); // ⭐ Changed to generic verifyImage
+const { verifyImage } = require('../services/verificationService');
 const { updateStreak } = require('../services/streakService');
 const { calculateCheckInPoints, isMilestone } = require('../utils/pointsCalculator');
 const { getStartOfDay } = require('../utils/dateHelpers');
@@ -22,6 +22,8 @@ const { getStartOfDay } = require('../utils/dateHelpers');
  */
 router.post('/', authenticateUser, upload.single('image'), async (req, res) => {
   try {
+    console.log('🔵 Check-in request started');
+    
     const user = await User.findOne({ firebaseUid: req.user.uid });
 
     if (!user) {
@@ -30,6 +32,8 @@ router.post('/', authenticateUser, upload.single('image'), async (req, res) => {
         status: 404,
       });
     }
+
+    console.log('✅ User found:', user._id);
 
     // Check if user has an active habit
     const habit = await Habit.findOne({
@@ -43,6 +47,8 @@ router.post('/', authenticateUser, upload.single('image'), async (req, res) => {
         status: 400,
       });
     }
+
+    console.log('✅ Habit found:', habit._id);
 
     // Validate image upload
     if (!req.file) {
@@ -60,11 +66,21 @@ router.post('/', authenticateUser, upload.single('image'), async (req, res) => {
       });
     }
 
-    // Check if user already checked in today
+    // ⭐ CHECK FOR EXISTING CHECK-IN BEFORE PROCEEDING
+    console.log('🔍 Checking for existing check-in...');
     const existingCheckIn = await CheckIn.hasCheckedInToday(user._id, habit._id);
+
+    if (existingCheckIn) {
+      console.log('⚠️ Existing check-in found:', {
+        id: existingCheckIn._id,
+        status: existingCheckIn.verificationStatus,
+        points: existingCheckIn.pointsEarned
+      });
+    }
 
     // Only block if there's already a VERIFIED check-in today
     if (existingCheckIn && existingCheckIn.verificationStatus === 'verified') {
+      console.log('❌ BLOCKING: Already checked in today with verified status');
       return res.status(400).json({
         error: 'Already successfully checked in today',
         status: 400,
@@ -80,19 +96,22 @@ router.post('/', authenticateUser, upload.single('image'), async (req, res) => {
 
     // If there's a rejected or pending check-in, delete it to allow retry
     if (existingCheckIn && (existingCheckIn.verificationStatus === 'rejected' || existingCheckIn.verificationStatus === 'pending')) {
+      console.log(`🗑️ Deleting ${existingCheckIn.verificationStatus} check-in to allow retry`);
       await CheckIn.findByIdAndDelete(existingCheckIn._id);
-      console.log(`Deleted ${existingCheckIn.verificationStatus} check-in ${existingCheckIn._id} to allow retry`);
     }
 
+    console.log('📤 Uploading image to R2...');
     // Upload image to R2
     const { imageUrl, imageKey } = await uploadImage(
       req.file.buffer,
       req.file.mimetype,
       user._id.toString()
     );
+    console.log('✅ Image uploaded:', imageUrl);
 
     // Create check-in record with pending status
     const checkInDate = new Date();
+    console.log('💾 Creating check-in record...');
     const checkIn = await CheckIn.create({
       userId: user._id,
       habitId: habit._id,
@@ -102,10 +121,12 @@ router.post('/', authenticateUser, upload.single('image'), async (req, res) => {
       checkInDate: getStartOfDay(checkInDate),
       pointsEarned: 0, // Will be set after verification
     });
+    console.log('✅ Check-in created:', checkIn._id);
 
     // ⭐ WAIT for AI verification before proceeding
-    // Pass the habit name to the verification service for context
+    console.log('🤖 Starting AI verification...');
     const verificationResult = await verifyImage(imageUrl, habit.habitName);
+    console.log('✅ Verification complete:', verificationResult.isVerified ? 'VERIFIED' : 'REJECTED');
     
     // Update check-in with verification results
     checkIn.verificationStatus = verificationResult.isVerified ? 'verified' : 'rejected';
@@ -117,20 +138,25 @@ router.post('/', authenticateUser, upload.single('image'), async (req, res) => {
 
     // Only award points and update streak if verification PASSED
     if (verificationResult.isVerified) {
+      console.log('🎉 Verification passed! Awarding points...');
+      
       // Update streak before awarding points
       await updateStreak(user._id, habit._id, checkInDate);
 
       // Reload user to get updated streak
       const updatedUser = await User.findById(user._id);
+      console.log('📊 User streak:', updatedUser.currentStreak);
 
       // Calculate points based on current streak
       pointsEarned = calculateCheckInPoints(updatedUser.currentStreak);
       checkIn.pointsEarned = pointsEarned;
 
+      console.log('💰 Points before:', updatedUser.totalPoints);
       // Award points to user
       updatedUser.addPoints(pointsEarned);
       updatedUser.incrementCheckIns();
       await updatedUser.save();
+      console.log('💰 Points after:', updatedUser.totalPoints, '(+' + pointsEarned + ')');
 
       // Check if this is a milestone
       const milestone = isMilestone(updatedUser.currentStreak);
@@ -147,12 +173,16 @@ router.post('/', authenticateUser, upload.single('image'), async (req, res) => {
         level: updatedUser.level,
         totalCheckIns: updatedUser.totalCheckIns,
       };
+    } else {
+      console.log('❌ Verification failed, no points awarded');
     }
 
     // Save check-in with final verification status
     await checkIn.save();
+    console.log('✅ Check-in saved with status:', checkIn.verificationStatus);
 
     // Return response with verification results
+    console.log('📤 Sending response to client');
     return res.status(201).json({
       message: verificationResult.isVerified 
         ? 'Check-in created successfully' 
@@ -172,7 +202,7 @@ router.post('/', authenticateUser, upload.single('image'), async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error creating check-in:', error);
+    console.error('❌ Error creating check-in:', error);
     res.status(500).json({
       error: 'Failed to create check-in',
       status: 500,
