@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Habit = require('../models/Habit');
 const User = require('../models/User');
+const CheckIn = require('../models/CheckIn');
 const authenticateUser = require('../middleware/auth');
 
 /**
@@ -113,6 +114,94 @@ router.get('/', authenticateUser, async (req, res) => {
     });
   }
 });
+
+/**
+ * GET /api/habits/dashboard
+ * Get all user habits with today's completion status
+ * Perfect for app state management
+ */
+router.get('/dashboard', authenticateUser, async (req, res) => {
+  try {
+    const user = await User.findOne({ firebaseUid: req.user.uid });
+
+    if (!user) {
+      return res.status(404).json({
+        error: 'User not found',
+        status: 404,
+      });
+    }
+
+    // Get all active habits
+    const habits = await Habit.find({
+      userId: user._id,
+      isActive: true,
+    }).sort({ createdAt: 1 }); // Oldest first
+
+    // Get today's date range
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+
+    // Get all check-ins for today for this user
+    const todaysCheckIns = await CheckIn.find({
+      userId: user._id,
+      checkInDate: {
+        $gte: startOfDay,
+        $lte: endOfDay,
+      },
+    });
+
+    // Create a map of habitId -> check-in status
+    const checkInMap = {};
+    todaysCheckIns.forEach(checkIn => {
+      checkInMap[checkIn.habitId.toString()] = {
+        isCompleted: checkIn.verificationStatus === 'verified',
+        checkInId: checkIn._id,
+        verificationStatus: checkIn.verificationStatus,
+        pointsEarned: checkIn.pointsEarned,
+        imageUrl: checkIn.imageUrl,
+        createdAt: checkIn.createdAt,
+      };
+    });
+
+    // Build response with completion status for each habit
+    const habitsWithStatus = habits.map(habit => {
+      const checkInStatus = checkInMap[habit._id.toString()];
+      
+      return {
+        id: habit._id,
+        habitName: habit.habitName,
+        description: habit.description,
+        category: habit.category,
+        icon: habit.icon,
+        reminderTime: habit.reminderTime,
+        isCustom: habit.isCustom,
+        
+        // Today's status
+        isCompletedToday: checkInStatus?.isCompleted || false,
+        checkIn: checkInStatus || null,
+      };
+    });
+
+    res.status(200).json({
+      habits: habitsWithStatus,
+      summary: {
+        total: habits.length,
+        completedToday: habitsWithStatus.filter(h => h.isCompletedToday).length,
+        remainingToday: habitsWithStatus.filter(h => !h.isCompletedToday).length,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching habits dashboard:', error);
+    res.status(500).json({
+      error: 'Failed to fetch habits dashboard',
+      status: 500,
+    });
+  }
+});
+
 
 /**
  * GET /api/habits/:id
