@@ -13,12 +13,13 @@ const { getStartOfDay } = require('../utils/dateHelpers');
 
 /**
  * Check-in Routes
- * Handle daily check-ins with image upload
+ * Handle daily check-ins with image upload (supports multiple habits)
  */
 
 /**
  * POST /api/checkins
  * Create a new check-in with image upload
+ * Requires habitId in request body to identify which habit to check in
  */
 router.post('/', authenticateUser, upload.single('image'), async (req, res) => {
   try {
@@ -35,20 +36,35 @@ router.post('/', authenticateUser, upload.single('image'), async (req, res) => {
 
     console.log('✅ User found:', user._id);
 
-    // Check if user has an active habit
+    // ⭐ Get habitId from request body
+    const { habitId } = req.body;
+
+    if (!habitId) {
+      return res.status(400).json({
+        error: 'habitId is required',
+        status: 400,
+        message: 'Please specify which habit you want to check in for',
+      });
+    }
+
+    console.log('🎯 Checking in for habit:', habitId);
+
+    // Get the specific habit
     const habit = await Habit.findOne({
+      _id: habitId,
       userId: user._id,
       isActive: true,
     });
 
     if (!habit) {
-      return res.status(400).json({
-        error: 'No active habit found. Please create a habit first.',
-        status: 400,
+      return res.status(404).json({
+        error: 'Habit not found',
+        status: 404,
+        message: 'This habit does not exist or is not active',
       });
     }
 
-    console.log('✅ Habit found:', habit._id);
+    console.log('✅ Habit found:', habit.habitName);
 
     // Validate image upload
     if (!req.file) {
@@ -66,27 +82,30 @@ router.post('/', authenticateUser, upload.single('image'), async (req, res) => {
       });
     }
 
-    // ⭐ CHECK FOR EXISTING CHECK-IN BEFORE PROCEEDING
-    console.log('🔍 Checking for existing check-in...');
+    // ⭐ CHECK FOR EXISTING CHECK-IN FOR THIS SPECIFIC HABIT
+    console.log('🔍 Checking for existing check-in for this habit today...');
     const existingCheckIn = await CheckIn.hasCheckedInToday(user._id, habit._id);
 
     if (existingCheckIn) {
       console.log('⚠️ Existing check-in found:', {
         id: existingCheckIn._id,
+        habit: habit.habitName,
         status: existingCheckIn.verificationStatus,
         points: existingCheckIn.pointsEarned
       });
     }
 
-    // Only block if there's already a VERIFIED check-in today
+    // Only block if there's already a VERIFIED check-in today for THIS habit
     if (existingCheckIn && existingCheckIn.verificationStatus === 'verified') {
-      console.log('❌ BLOCKING: Already checked in today with verified status');
+      console.log('❌ BLOCKING: Already checked in today for this habit');
       return res.status(400).json({
         error: 'Already successfully checked in today',
         status: 400,
-        message: 'You have already completed your habit today!',
+        message: `You have already completed "${habit.habitName}" today!`,
         checkIn: {
           id: existingCheckIn._id,
+          habitId: habit._id,
+          habitName: habit.habitName,
           checkInDate: existingCheckIn.checkInDate,
           verificationStatus: existingCheckIn.verificationStatus,
           pointsEarned: existingCheckIn.pointsEarned,
@@ -94,7 +113,7 @@ router.post('/', authenticateUser, upload.single('image'), async (req, res) => {
       });
     }
 
-    // If there's a rejected or pending check-in, delete it to allow retry
+    // If there's a rejected or pending check-in for this habit, delete it to allow retry
     if (existingCheckIn && (existingCheckIn.verificationStatus === 'rejected' || existingCheckIn.verificationStatus === 'pending')) {
       console.log(`🗑️ Deleting ${existingCheckIn.verificationStatus} check-in to allow retry`);
       await CheckIn.findByIdAndDelete(existingCheckIn._id);
@@ -123,9 +142,12 @@ router.post('/', authenticateUser, upload.single('image'), async (req, res) => {
     });
     console.log('✅ Check-in created:', checkIn._id);
 
-    // ⭐ WAIT for AI verification before proceeding
-    console.log('🤖 Starting AI verification...');
-    const verificationResult = await verifyImage(imageUrl, habit.habitName);
+    // ⭐ Use habit's custom verification prompt
+    console.log('🤖 Starting AI verification with prompt:', habit.verificationPrompt);
+    const verificationResult = await verifyImage(
+      imageUrl, 
+      habit.verificationPrompt || habit.habitName
+    );
     console.log('✅ Verification complete:', verificationResult.isVerified ? 'VERIFIED' : 'REJECTED');
     
     // Update check-in with verification results
@@ -140,7 +162,7 @@ router.post('/', authenticateUser, upload.single('image'), async (req, res) => {
     if (verificationResult.isVerified) {
       console.log('🎉 Verification passed! Awarding points...');
       
-      // Update streak before awarding points
+      // Update streak before awarding points (for this specific habit)
       await updateStreak(user._id, habit._id, checkInDate);
 
       // Reload user to get updated streak
@@ -185,11 +207,13 @@ router.post('/', authenticateUser, upload.single('image'), async (req, res) => {
     console.log('📤 Sending response to client');
     return res.status(201).json({
       message: verificationResult.isVerified 
-        ? 'Check-in created successfully' 
-        : 'Check-in failed verification',
+        ? `Check-in for "${habit.habitName}" successful!` 
+        : `Check-in for "${habit.habitName}" failed verification`,
       success: verificationResult.isVerified,
       checkIn: {
         id: checkIn._id,
+        habitId: habit._id,
+        habitName: habit.habitName,
         imageUrl: checkIn.imageUrl,
         verificationStatus: checkIn.verificationStatus,
         aiVerificationNote: checkIn.aiVerificationNote,
@@ -213,6 +237,7 @@ router.post('/', authenticateUser, upload.single('image'), async (req, res) => {
 /**
  * GET /api/checkins
  * Get paginated list of user's check-ins
+ * Optional: Filter by habitId
  */
 router.get('/', authenticateUser, async (req, res) => {
   try {
@@ -230,20 +255,29 @@ router.get('/', authenticateUser, async (req, res) => {
     const limit = parseInt(req.query.limit) || 30;
     const skip = (page - 1) * limit;
 
+    // Optional: Filter by habitId
+    const filter = { userId: user._id };
+    if (req.query.habitId) {
+      filter.habitId = req.query.habitId;
+    }
+
     // Get check-ins
-    const checkIns = await CheckIn.find({ userId: user._id })
+    const checkIns = await CheckIn.find(filter)
       .sort({ checkInDate: -1 })
       .skip(skip)
       .limit(limit)
-      .populate('habitId', 'habitName');
+      .populate('habitId', 'habitName icon category');
 
     // Get total count for pagination
-    const total = await CheckIn.countDocuments({ userId: user._id });
+    const total = await CheckIn.countDocuments(filter);
 
     res.status(200).json({
       checkIns: checkIns.map(checkIn => ({
         id: checkIn._id,
+        habitId: checkIn.habitId?._id,
         habitName: checkIn.habitId?.habitName,
+        habitIcon: checkIn.habitId?.icon,
+        habitCategory: checkIn.habitId?.category,
         imageUrl: checkIn.imageUrl,
         verificationStatus: checkIn.verificationStatus,
         aiVerificationNote: checkIn.aiVerificationNote,
@@ -270,7 +304,8 @@ router.get('/', authenticateUser, async (req, res) => {
 
 /**
  * GET /api/checkins/today
- * Check if user has checked in today
+ * Check if user has checked in today for a specific habit
+ * Requires habitId query parameter
  */
 router.get('/today', authenticateUser, async (req, res) => {
   try {
@@ -283,15 +318,25 @@ router.get('/today', authenticateUser, async (req, res) => {
       });
     }
 
+    const { habitId } = req.query;
+
+    if (!habitId) {
+      return res.status(400).json({
+        error: 'habitId query parameter is required',
+        status: 400,
+      });
+    }
+
     const habit = await Habit.findOne({
+      _id: habitId,
       userId: user._id,
       isActive: true,
     });
 
     if (!habit) {
-      return res.status(200).json({
-        hasCheckedIn: false,
-        checkIn: null,
+      return res.status(404).json({
+        error: 'Habit not found',
+        status: 404,
       });
     }
 
@@ -299,6 +344,8 @@ router.get('/today', authenticateUser, async (req, res) => {
 
     res.status(200).json({
       hasCheckedIn: !!checkIn,
+      habitId: habit._id,
+      habitName: habit.habitName,
       checkIn: checkIn ? {
         id: checkIn._id,
         imageUrl: checkIn.imageUrl,
@@ -335,7 +382,7 @@ router.get('/:id', authenticateUser, async (req, res) => {
     const checkIn = await CheckIn.findOne({
       _id: req.params.id,
       userId: user._id,
-    }).populate('habitId', 'habitName');
+    }).populate('habitId', 'habitName icon category');
 
     if (!checkIn) {
       return res.status(404).json({
@@ -347,7 +394,10 @@ router.get('/:id', authenticateUser, async (req, res) => {
     res.status(200).json({
       checkIn: {
         id: checkIn._id,
+        habitId: checkIn.habitId?._id,
         habitName: checkIn.habitId?.habitName,
+        habitIcon: checkIn.habitId?.icon,
+        habitCategory: checkIn.habitId?.category,
         imageUrl: checkIn.imageUrl,
         verificationStatus: checkIn.verificationStatus,
         aiVerificationNote: checkIn.aiVerificationNote,

@@ -7,12 +7,12 @@ const authenticateUser = require('../middleware/auth');
 
 /**
  * Habits Routes
- * Handle habit creation and management
+ * Handle habit creation and management (supports multiple habits)
  */
 
 /**
  * POST /api/habits
- * Create a new habit for the user (MVP: limit to one habit)
+ * Create a new habit for the user (supports multiple habits)
  */
 router.post('/', authenticateUser, async (req, res) => {
   try {
@@ -25,34 +25,36 @@ router.post('/', authenticateUser, async (req, res) => {
       });
     }
 
-    // Check if user already has an active habit
-    const existingHabit = await Habit.findOne({
-      userId: user._id,
-      isActive: true,
-    });
+    // Validate required fields
+    const { habitName, description, reminderTime, category, icon, isCustom, commonHabitId, verificationType, verificationPrompt } = req.body;
 
-    if (existingHabit) {
+    if (!habitName || !description) {
       return res.status(400).json({
-        error: 'User already has an active habit. MVP limits one habit per user.',
+        error: 'habitName and description are required',
         status: 400,
-        existingHabit: {
-          id: existingHabit._id,
-          habitName: existingHabit.habitName,
-        },
       });
     }
 
-    // Create habit with defaults or provided values
-    const { habitName, description, reminderTime } = req.body;
-
-    const habit = await Habit.create({
+    // Create habit with provided values
+    const habitData = {
       userId: user._id,
-      habitName: habitName || 'Make my bed',
-      description: description || 'Daily bed-making habit',
+      habitName,
+      description,
       reminderTime: reminderTime || '09:00',
-      verificationMethod: 'photo',
+      category: category || 'custom',
+      icon: icon || '✓',
+      isCustom: isCustom || false,
       isActive: true,
-    });
+      verificationType: verificationType || 'photo',
+      verificationPrompt: verificationPrompt || `Does this image show evidence of completing: ${habitName}?`,
+    };
+
+    // If created from a common habit, link it
+    if (commonHabitId) {
+      habitData.commonHabitId = commonHabitId;
+    }
+
+    const habit = await Habit.create(habitData);
 
     res.status(201).json({
       message: 'Habit created successfully',
@@ -60,8 +62,12 @@ router.post('/', authenticateUser, async (req, res) => {
         id: habit._id,
         habitName: habit.habitName,
         description: habit.description,
+        category: habit.category,
+        icon: habit.icon,
         reminderTime: habit.reminderTime,
-        verificationMethod: habit.verificationMethod,
+        verificationType: habit.verificationType,
+        verificationPrompt: habit.verificationPrompt,
+        isCustom: habit.isCustom,
         isActive: habit.isActive,
         createdAt: habit.createdAt,
       },
@@ -93,15 +99,19 @@ router.get('/', authenticateUser, async (req, res) => {
     const habits = await Habit.find({
       userId: user._id,
       isActive: true,
-    });
+    }).sort({ createdAt: 1 });
 
     res.status(200).json({
       habits: habits.map(habit => ({
         id: habit._id,
         habitName: habit.habitName,
         description: habit.description,
+        category: habit.category,
+        icon: habit.icon,
         reminderTime: habit.reminderTime,
-        verificationMethod: habit.verificationMethod,
+        verificationType: habit.verificationType,
+        verificationPrompt: habit.verificationPrompt,
+        isCustom: habit.isCustom,
         isActive: habit.isActive,
         createdAt: habit.createdAt,
       })),
@@ -178,6 +188,7 @@ router.get('/dashboard', authenticateUser, async (req, res) => {
         icon: habit.icon,
         reminderTime: habit.reminderTime,
         isCustom: habit.isCustom,
+        verificationType: habit.verificationType,
         
         // Today's status
         isCompletedToday: checkInStatus?.isCompleted || false,
@@ -201,7 +212,6 @@ router.get('/dashboard', authenticateUser, async (req, res) => {
     });
   }
 });
-
 
 /**
  * GET /api/habits/:id
@@ -235,8 +245,12 @@ router.get('/:id', authenticateUser, async (req, res) => {
         id: habit._id,
         habitName: habit.habitName,
         description: habit.description,
+        category: habit.category,
+        icon: habit.icon,
         reminderTime: habit.reminderTime,
-        verificationMethod: habit.verificationMethod,
+        verificationType: habit.verificationType,
+        verificationPrompt: habit.verificationPrompt,
+        isCustom: habit.isCustom,
         isActive: habit.isActive,
         createdAt: habit.createdAt,
       },
@@ -278,11 +292,13 @@ router.put('/:id', authenticateUser, async (req, res) => {
     }
 
     // Update allowed fields
-    const { habitName, description, reminderTime, isActive } = req.body;
+    const { habitName, description, reminderTime, isActive, category, icon } = req.body;
 
     if (habitName) habit.habitName = habitName;
     if (description) habit.description = description;
     if (reminderTime) habit.reminderTime = reminderTime;
+    if (category) habit.category = category;
+    if (icon) habit.icon = icon;
     if (typeof isActive === 'boolean') habit.isActive = isActive;
 
     await habit.save();
@@ -293,6 +309,8 @@ router.put('/:id', authenticateUser, async (req, res) => {
         id: habit._id,
         habitName: habit.habitName,
         description: habit.description,
+        category: habit.category,
+        icon: habit.icon,
         reminderTime: habit.reminderTime,
         isActive: habit.isActive,
       },
