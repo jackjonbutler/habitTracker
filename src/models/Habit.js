@@ -2,7 +2,8 @@ const mongoose = require('mongoose');
 
 /**
  * Habit Schema
- * Stores user habits (MVP: one habit per user - "Make my bed")
+ * Stores user habits with verification details
+ * Supports multiple habits per user
  */
 const habitSchema = new mongoose.Schema({
   userId: {
@@ -14,19 +15,46 @@ const habitSchema = new mongoose.Schema({
   habitName: {
     type: String,
     required: true,
-    default: 'Make my bed',
   },
   description: {
     type: String,
+    required: true,
   },
-  verificationMethod: {
+  category: {
     type: String,
+    enum: ['health', 'productivity', 'wellness', 'fitness', 'learning', 'lifestyle', 'custom'],
+    default: 'custom',
+  },
+  icon: {
+    type: String,
+    default: '✓',
+  },
+  // ⭐ Verification settings (stored per habit for consistency)
+  verificationType: {
+    type: String,
+    enum: ['photo', 'manual', 'timer', 'location'],
     default: 'photo',
-    enum: ['photo', 'manual'],
+  },
+  verificationPrompt: {
+    type: String,
+    required: true,
+  },
+  // Metadata
+  isCustom: {
+    type: Boolean,
+    default: false,
+  },
+  aiGenerated: {
+    type: Boolean,
+    default: false,
+  },
+  commonHabitId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'CommonHabit',
   },
   reminderTime: {
     type: String,
-    default: '09:00', // Format: HH:MM
+    default: '09:00',
   },
   isActive: {
     type: Boolean,
@@ -42,8 +70,9 @@ const habitSchema = new mongoose.Schema({
   },
 });
 
-// Compound index for efficient queries
+// Compound index for multiple active habits per user
 habitSchema.index({ userId: 1, isActive: 1 });
+habitSchema.index({ userId: 1, commonHabitId: 1 });
 
 // Update the updatedAt timestamp before saving
 habitSchema.pre('save', function(next) {
