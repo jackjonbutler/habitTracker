@@ -13,6 +13,67 @@ const { suggestVerification } = require('../services/habitSuggestionService');
  */
 
 /**
+ * Helper function to get user's habits with today's completion status
+ * Used to return consistent habit data after mutations
+ */
+const getUserHabitsWithStatus = async (userId) => {
+  // Get all active habits
+  const habits = await Habit.find({
+    userId: userId,
+    isActive: true,
+  }).sort({ createdAt: 1 });
+
+  // Get today's date range
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  
+  const endOfDay = new Date();
+  endOfDay.setHours(23, 59, 59, 999);
+
+  // Get all check-ins for today for this user
+  const todaysCheckIns = await CheckIn.find({
+    userId: userId,
+    checkInDate: {
+      $gte: startOfDay,
+      $lte: endOfDay,
+    },
+  });
+
+  // Create a map of habitId -> check-in status
+  const checkInMap = {};
+  todaysCheckIns.forEach(checkIn => {
+    checkInMap[checkIn.habitId.toString()] = {
+      isCompleted: checkIn.verificationStatus === 'verified',
+      checkInId: checkIn._id,
+      verificationStatus: checkIn.verificationStatus,
+      pointsEarned: checkIn.pointsEarned,
+      imageUrl: checkIn.imageUrl,
+      createdAt: checkIn.createdAt,
+    };
+  });
+
+  // Build response with completion status for each habit
+  return habits.map(habit => {
+    const checkInStatus = checkInMap[habit._id.toString()];
+    
+    return {
+      id: habit._id,
+      habitName: habit.habitName,
+      description: habit.description,
+      category: habit.category,
+      icon: habit.icon,
+      reminderTime: habit.reminderTime,
+      isCustom: habit.isCustom,
+      verificationType: habit.verificationType,
+      
+      // Today's status
+      isCompletedToday: checkInStatus?.isCompleted || false,
+      checkIn: checkInStatus || null,
+    };
+  });
+};
+
+/**
  * POST /api/habits/suggest-verification
  * Get AI suggestion for verification method and prompt
  * Used when creating custom habits
@@ -198,6 +259,9 @@ router.post('/', authenticateUser, async (req, res) => {
     console.log('🎉 Habit created:', habit._id);
     console.log('📝 Verification prompt:', habit.verificationPrompt);
 
+    // Get updated list of all user's habits
+    const allHabits = await getUserHabitsWithStatus(user._id);
+
     res.status(201).json({
       message: 'Habit created successfully',
       habit: {
@@ -213,6 +277,7 @@ router.post('/', authenticateUser, async (req, res) => {
         isActive: habit.isActive,
         createdAt: habit.createdAt,
       },
+      habits: allHabits, // ⭐ Return all habits for app state update
     });
   } catch (error) {
     console.error('Error creating habit:', error);
@@ -283,65 +348,13 @@ router.get('/dashboard', authenticateUser, async (req, res) => {
       });
     }
 
-    // Get all active habits
-    const habits = await Habit.find({
-      userId: user._id,
-      isActive: true,
-    }).sort({ createdAt: 1 }); // Oldest first
-
-    // Get today's date range
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
-
-    // Get all check-ins for today for this user
-    const todaysCheckIns = await CheckIn.find({
-      userId: user._id,
-      checkInDate: {
-        $gte: startOfDay,
-        $lte: endOfDay,
-      },
-    });
-
-    // Create a map of habitId -> check-in status
-    const checkInMap = {};
-    todaysCheckIns.forEach(checkIn => {
-      checkInMap[checkIn.habitId.toString()] = {
-        isCompleted: checkIn.verificationStatus === 'verified',
-        checkInId: checkIn._id,
-        verificationStatus: checkIn.verificationStatus,
-        pointsEarned: checkIn.pointsEarned,
-        imageUrl: checkIn.imageUrl,
-        createdAt: checkIn.createdAt,
-      };
-    });
-
-    // Build response with completion status for each habit
-    const habitsWithStatus = habits.map(habit => {
-      const checkInStatus = checkInMap[habit._id.toString()];
-      
-      return {
-        id: habit._id,
-        habitName: habit.habitName,
-        description: habit.description,
-        category: habit.category,
-        icon: habit.icon,
-        reminderTime: habit.reminderTime,
-        isCustom: habit.isCustom,
-        verificationType: habit.verificationType,
-        
-        // Today's status
-        isCompletedToday: checkInStatus?.isCompleted || false,
-        checkIn: checkInStatus || null,
-      };
-    });
+    // Get all habits with today's completion status
+    const habitsWithStatus = await getUserHabitsWithStatus(user._id);
 
     res.status(200).json({
       habits: habitsWithStatus,
       summary: {
-        total: habits.length,
+        total: habitsWithStatus.length,
         completedToday: habitsWithStatus.filter(h => h.isCompletedToday).length,
         remainingToday: habitsWithStatus.filter(h => !h.isCompletedToday).length,
       },
@@ -454,6 +467,9 @@ router.put('/:id', authenticateUser, async (req, res) => {
 
     await habit.save();
 
+    // Get updated list of all user's habits
+    const allHabits = await getUserHabitsWithStatus(user._id);
+
     res.status(200).json({
       message: 'Habit updated successfully',
       habit: {
@@ -466,6 +482,7 @@ router.put('/:id', authenticateUser, async (req, res) => {
         verificationPrompt: habit.verificationPrompt,
         isActive: habit.isActive,
       },
+      habits: allHabits, // ⭐ Return all habits for app state update
     });
   } catch (error) {
     console.error('Error updating habit:', error);
@@ -507,8 +524,12 @@ router.delete('/:id', authenticateUser, async (req, res) => {
     habit.isActive = false;
     await habit.save();
 
+    // Get updated list of all user's habits (will exclude this one since it's now inactive)
+    const allHabits = await getUserHabitsWithStatus(user._id);
+
     res.status(200).json({
       message: 'Habit deactivated successfully',
+      habits: allHabits, // ⭐ Return remaining active habits for app state update
     });
   } catch (error) {
     console.error('Error deleting habit:', error);

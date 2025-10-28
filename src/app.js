@@ -21,6 +21,7 @@ const streakRoutes = require('./routes/streaks');
 const app = express();
 
 // Security middleware
+app.set('trust proxy', 1);
 app.use(helmet());
 
 // CORS configuration for FlutterFlow frontend
