@@ -76,8 +76,9 @@ const getVerificationPrompt = (habitName) => {
 
 A made bed simply means: 
 (1) pillows are at the head of the bed, 
-(2) a duvet Or comforter OR blanket is spread over the mattress covering most of it, and 
-(3) you're not currently sleeping in it. The bed can be wrinkled, messy, or casual - it just needs these basic elements.
+(2) a duvet is spread over the mattress covering most of it
+(3) A comforter or blanket is NOT ESSENTIAL
+(4) you're not currently sleeping in it. The bed CAN be wrinkled - it just needs these basic elements.
 
 Respond with ONLY "YES" or "NO" on the first line, followed by a brief 1-2 sentence explanation.`;
   }
