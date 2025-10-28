@@ -74,11 +74,10 @@ const getVerificationPrompt = (habitName) => {
   if (habitLower.includes('bed') || habitLower.includes('make my bed')) {
     return `Does this image show a properly made bed? 
 
-A made bed should have:
-- Sheets, blankets, or a comforter that are neatly arranged and smoothed out
-- Minimal wrinkles or creases
-- Pillows arranged neatly
-- The bed should look intentionally tidied
+A made bed simply means: 
+(1) pillows are at the head of the bed, 
+(2) a duvet Or comforter OR blanket is spread over the mattress covering most of it, and 
+(3) you're not currently sleeping in it. The bed can be wrinkled, messy, or casual - it just needs these basic elements.
 
 Respond with ONLY "YES" or "NO" on the first line, followed by a brief 1-2 sentence explanation.`;
   }
